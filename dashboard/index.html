@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ComfySpot | Dashboard</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<div class="shell">
+
+  <header class="top">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="1" y="1" width="30" height="30" rx="9"></rect>
+        <path d="M8 19c2.5 0 2.5-6 5-6s2.5 8 5 8 2.5-10 5-10"></path>
+      </svg>
+      <div>
+        <h1>ComfySpot</h1>
+        <p class="tagline">Tempat belajar paling nyaman saat ini</p>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="conn" id="conn" role="status" aria-live="polite">
+        <span class="conn-dot" aria-hidden="true"></span>
+        <span id="conn-text">Belum tersambung</span>
+      </div>
+
+      <form id="pid-form" class="pid-form" autocomplete="off">
+        <label for="pid" class="sr-only">PROJECT_ID</label>
+        <input id="pid" type="text" spellcheck="false" placeholder="PROJECT_ID kelompok" maxlength="40">
+        <button type="submit" id="pid-btn" class="btn primary">Sambungkan</button>
+      </form>
+
+      <div class="mode" role="group" aria-label="Mode penilaian">
+        <button type="button" class="mode-btn" data-mode="hening" aria-pressed="false">Hening</button>
+        <button type="button" class="mode-btn" data-mode="ramai" aria-pressed="false">Ramai</button>
+      </div>
+
+      <button type="button" class="btn ghost theme-btn" id="theme-btn" title="Ganti tema">Tema: otomatis</button>
+    </div>
+  </header>
+
+  <p class="notice" id="notice" hidden></p>
+
+  <div class="demo-banner" id="demo-banner" hidden>
+    <strong>DATA CONTOH</strong>
+    <span>Angka di halaman ini dibuat-buat untuk screenshot desain, bukan hasil pengukuran. Buka tanpa <code>?demo</code> untuk data asli.</span>
+  </div>
+
+  <section class="card best" id="best" aria-live="polite">
+    <div class="best-main">
+      <p class="eyebrow">Tempat terbaik sekarang</p>
+      <h2 class="best-name" id="best-name">Belum ada data</h2>
+      <p class="best-meta" id="best-meta">Isi PROJECT_ID lalu tekan Sambungkan.</p>
+    </div>
+    <div class="best-score" id="best-score" hidden>
+      <div class="hero"><span id="best-value">-</span><small>/100</small></div>
+      <div id="best-chip"></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="loc-title">
+    <div class="section-head">
+      <h2 id="loc-title">Lokasi</h2>
+      <p class="section-sub" id="updated">Belum ada pembaruan</p>
+    </div>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section class="card chart-card" aria-labelledby="hourly-title">
+    <div class="card-head">
+      <div>
+        <h2 id="hourly-title">Kebisingan per jam</h2>
+        <p class="section-sub">Rata-rata dB relatif tiap jam hari ini, satu garis per lokasi. Bukan angka sound meter terkalibrasi.</p>
+      </div>
+      <div class="legend" id="hourly-legend"></div>
+    </div>
+    <div class="chart-wrap" id="hourly-wrap">
+      <div class="tooltip" id="hourly-tip" hidden></div>
+    </div>
+    <div class="busiest" id="busiest"></div>
+    <details class="table-view">
+      <summary>Tampilkan sebagai tabel</summary>
+      <div class="table-scroll" id="hourly-table"></div>
+    </details>
+  </section>
+
+  <section class="card" aria-labelledby="rank-title">
+    <div class="card-head">
+      <div>
+        <h2 id="rank-title">Peringkat</h2>
+        <p class="section-sub" id="rank-sub">Urut dari skor kenyamanan tertinggi.</p>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="rank">
+        <thead>
+          <tr>
+            <th scope="col">#</th>
+            <th scope="col">Lokasi</th>
+            <th scope="col">Skor</th>
+            <th scope="col">Status</th>
+            <th scope="col">Cahaya</th>
+            <th scope="col">Kebisingan</th>
+            <th scope="col">Sumber cahaya</th>
+          </tr>
+        </thead>
+        <tbody id="rank-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <p class="foot">Skor 0 sampai 100 dari cahaya dan kebisingan. Nyaman mulai 75, Cukup mulai 50. Desibel diukur mikrofon HP, jadi bersifat relatif.</p>
+</div>
+
+<script src="https://unpkg.com/mqtt@5.16.1/dist/mqtt.min.js"
+        integrity="sha384-ilRYg/zm2XqUafLvBoGVk40UfNRnvUkYMy+e/JPo4YgsFR6X9Q3jYEkqFQXquX4r" crossorigin="anonymous"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

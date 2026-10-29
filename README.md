@@ -94,6 +94,20 @@ Skrip memilih sensor cahaya sekitar otomatis dari daftar `termux-sensor -l` (di 
 
 Chrome Android versi baru tidak lagi menyediakan sensor cahaya, itu sebabnya cahaya dibaca lewat Termux. Kalau suatu browser mendukung `AmbientLightSensor`, halaman memakainya langsung. Isian lux manual di halaman hanya untuk menguji alur dan ditandai `lux_source: manual`, jadi tidak boleh dipakai untuk pengujian akhir.
 
+## Membuka dashboard
+
+Dashboard ada di folder `dashboard/` dan ikut dihosting GitHub Pages bersama halaman sensor, jadi alamatnya `https://bahim05.github.io/ComfySpot/dashboard/`. Bisa juga dibuka di laptop tanpa GitHub Pages:
+
+```
+python -m http.server 8000
+```
+
+lalu buka `http://localhost:8000/dashboard/`. Isi PROJECT_ID yang sama dengan di `.env`, lalu tekan Sambungkan. Dashboard langsung menerima state terakhir dari hub (pesan retained) dan memperbaruinya tiap detik. Tombol Hening dan Ramai mengirim mode ke hub; tombol baru menyala setelah hub mengirim balik mode yang dipakai.
+
+Yang tampil: lokasi terbaik beserta skornya, kartu tiap lokasi (skor, lampu status, lux, dB relatif, dan grafik skor beberapa menit terakhir), grafik kebisingan per jam dengan jam paling ramai, dan tabel peringkat yang menandai HP offline atau yang masih menunggu data cahaya. Grafik mini di kartu dikumpulkan oleh browser selama halaman terbuka, jadi kosong lagi setelah halaman dimuat ulang. PROJECT_ID terakhir diingat browser, jadi lain kali dashboard tersambung sendiri.
+
+Untuk screenshot desain tanpa hub, buka `dashboard/?demo`. Halaman itu memakai data buatan yang diberi label DATA CONTOH dan tidak tersambung ke broker, jadi jangan dipakai sebagai hasil pengujian.
+
 ## Kalibrasi
 
 HP tidak punya mikrofon terkalibrasi, jadi desibelnya relatif. Untuk mendekatkan ke sound meter: ukur beberapa kondisi suara dengan HP dan aplikasi sound meter secara bersamaan, hitung `calibration_offset(db_hp, db_meter)` dari `shared/processing.py`, lalu tulis hasilnya di `calibration.json`, misalnya `{"edge1": 3.5, "edge2": -2.0}`. Hub membaca file itu saat dijalankan.
@@ -121,7 +135,7 @@ edge_sim.py       simulator HP lokasi
 light_termux.py   pembaca sensor cahaya untuk HP lokasi (Termux)
 shared/           pengolahan data, algoritma, topic, konfigurasi
 sensor/           halaman sensor untuk HP (HTML, JS)
-dashboard/        dashboard web (menyusul)
+dashboard/        dashboard web (HTML, JS)
 tests/            tes unit
 data/             log dan statistik hasil jalan (tidak di-commit)
 ```
