@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ComfySpot | Sensor HP</title>
+  <link rel="stylesheet" href="sensor.css">
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <h1>ComfySpot</h1>
+    <p>Halaman ini mengubah HP menjadi sensor lokasi: membaca cahaya dan kebisingan, mengirim angkanya ke hub, lalu menampilkan lampu status.</p>
+  </header>
+
+  <section class="card">
+    <form id="connect-form" autocomplete="off">
+      <label>Alamat WebSocket broker
+        <input id="url" type="text" spellcheck="false" value="wss://broker.hivemq.com:8884/mqtt">
+      </label>
+      <label>PROJECT_ID (sama dengan di .env)
+        <input id="pid" type="text" spellcheck="false" placeholder="id unik kelompok">
+      </label>
+      <label>ID perangkat
+        <input id="device" type="text" spellcheck="false" value="edge1">
+      </label>
+      <label>Nama lokasi
+        <input id="location" type="text" value="Selasar">
+      </label>
+      <details>
+        <summary>Broker pribadi (opsional)</summary>
+        <label>Username <input id="username" type="text" spellcheck="false"></label>
+        <label>Password <input id="password" type="password"></label>
+      </details>
+      <button type="submit" id="connect-btn" class="primary">Mulai</button>
+    </form>
+    <p class="hint" id="msg">Tekan Mulai, lalu izinkan mikrofon. Suara tidak direkam atau dikirim, hanya angka seberapa keras bunyinya.</p>
+  </section>
+
+  <section class="card status" id="status-card">
+    <div class="lamp" id="lamp"></div>
+    <div class="big" id="status-text">Belum ada perintah</div>
+    <div class="sub" id="status-sub">Menunggu hub</div>
+  </section>
+
+  <section class="card">
+    <h2>Pembacaan</h2>
+    <div class="row"><span>Cahaya</span><strong id="v-lux">-</strong></div>
+    <div class="row"><span>Sumber cahaya</span><strong id="v-src">-</strong></div>
+    <div class="row"><span>RMS mikrofon</span><strong id="v-rms">-</strong></div>
+    <div class="row"><span>Pesan terkirim</span><strong id="v-seq">0</strong></div>
+    <div class="row"><span>MQTT</span><strong id="v-mqtt">Belum terhubung</strong></div>
+    <label id="manual-wrap" hidden>Cahaya manual (lux), dari aplikasi lux meter
+      <input id="lux-manual" type="number" min="0" step="1" inputmode="decimal">
+    </label>
+    <p class="hint" id="light-note">Sensor cahaya belum diperiksa.</p>
+  </section>
+
+  <p class="foot">Biarkan tab ini terbuka dan layar menyala. Chrome menghentikan mikrofon saat tab di latar belakang.</p>
+</div>
+
+<script src="https://unpkg.com/mqtt@5.16.1/dist/mqtt.min.js"></script>
+<script src="sensor.js"></script>
+</body>
+</html>

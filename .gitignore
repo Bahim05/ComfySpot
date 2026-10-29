@@ -1,0 +1,16 @@
+# rahasia dan konfigurasi lokal
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# data hasil jalan (dipilih manual mana yang mau di-commit sebagai bukti pengujian)
+data/*.csv
+data/*.json
+data/*.tmp
+
+# editor
+.vscode/
+.idea/
