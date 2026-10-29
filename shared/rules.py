@@ -2,61 +2,67 @@
 
 Semua fungsi di sini murni (tidak memakai MQTT atau jam sistem), jadi mudah dites.
 """
+import math
 from collections import defaultdict
 
-# Acuan cahaya untuk ruang baca: minimal sekitar 300 lux (SNI 03-6197-2000, perlu diverifikasi ke dokumen aslinya).
+# Dua kriteria yang bisa diatur dari dashboard, berlaku untuk semua lokasi sekaligus.
+# Nilai standarnya berasal dari acuan ruang baca:
+#   LUX_TARGET  : minimal terang, sekitar 300 lux (SNI 03-6197-2000, perlu diverifikasi ke dokumen aslinya)
+#   NOISE_LIMIT : batas bising, sekitar 55 dB (SNI 03-6386-2000, perlu diverifikasi)
 LUX_TARGET = 300.0
+NOISE_LIMIT = 55.0
 
-# Kurva skor kebisingan sebagai pasangan (dB, skor 0..1), diinterpolasi linear di antaranya.
-#   sampai 40 dB : skor penuh
-#   55 dB        : batas ruang baca (SNI 03-6386-2000, perlu diverifikasi), skor 0,6
-#   75 dB atau lebih : skor 0
-NOISE_CURVE = [(40.0, 1.0), (55.0, 0.6), (75.0, 0.0)]
-
-# Bobot per mode. Mode "hening" mementingkan suara; mode "ramai" memberi toleransi lebih untuk suara.
-MODES = {
-    "hening": {"light": 0.3, "noise": 0.7},
-    "ramai": {"light": 0.6, "noise": 0.4},
-}
-DEFAULT_MODE = "hening"
+# Rentang yang diterima hub dari dashboard. Di luar ini pesan dianggap tidak masuk akal dan ditolak.
+LUX_TARGET_RANGE = (50.0, 1000.0)
+NOISE_LIMIT_RANGE = (40.0, 80.0)
 
 # Batas skor untuk lampu status.
 GREEN_MIN = 75.0
 YELLOW_MIN = 50.0
 
 
-def light_score(lux):
-    """Skor cahaya 0..1: naik linear sampai LUX_TARGET, lalu penuh."""
-    return max(0.0, min(1.0, lux / LUX_TARGET))
+def light_score(lux, lux_target=LUX_TARGET):
+    """Skor terang 0..1: naik linear sampai lux_target, lalu penuh."""
+    return max(0.0, min(1.0, lux / lux_target))
 
 
-def noise_score(db):
-    """Skor kebisingan 0..1 dari kurva NOISE_CURVE."""
-    first_db, first_score = NOISE_CURVE[0]
+def noise_curve(noise_limit=NOISE_LIMIT):
+    """Kurva skor sepi sebagai pasangan (dB, skor 0..1), digeser mengikuti batas bising.
+
+      limit - 15 dB atau kurang : skor penuh
+      limit                     : skor 0,6
+      limit + 20 dB atau lebih  : skor 0
+    Dengan batas standar 55 dB kurvanya (40, 1,0), (55, 0,6), (75, 0,0).
+    """
+    return [(noise_limit - 15.0, 1.0), (noise_limit, 0.6), (noise_limit + 20.0, 0.0)]
+
+
+def noise_score(db, noise_limit=NOISE_LIMIT):
+    """Skor sepi 0..1, interpolasi linear di antara titik-titik noise_curve."""
+    curve = noise_curve(noise_limit)
+    first_db, first_score = curve[0]
     if db <= first_db:
         return first_score
-    for (d0, s0), (d1, s1) in zip(NOISE_CURVE, NOISE_CURVE[1:]):
+    for (d0, s0), (d1, s1) in zip(curve, curve[1:]):
         if db <= d1:
             # Interpolasi linear di antara dua titik kurva.
             return s0 + (s1 - s0) * (db - d0) / (d1 - d0)
-    return NOISE_CURVE[-1][1]
+    return curve[-1][1]
 
 
-def comfort_score(lux, db, mode=DEFAULT_MODE):
-    """Skor kenyamanan 0..100: rata-rata geometrik berbobot dari skor cahaya dan skor kebisingan.
+def comfort_score(lux, db, lux_target=LUX_TARGET, noise_limit=NOISE_LIMIT):
+    """Skor kenyamanan 0..100: rata-rata geometrik skor terang dan skor sepi, berbobot sama.
 
-    skor = 100 * skor_cahaya^bobot_cahaya * skor_suara^bobot_suara
+    skor = 100 * sqrt(skor_terang * skor_sepi)
 
-    Kenapa bukan jumlah berbobot biasa: pada jumlah biasa, suara yang sangat tenang bisa menutupi
-    ruangan yang gelap gulita (lux 0 dan 34 dB tetap mendapat 70 di mode hening, yaitu kuning).
-    Pada rata-rata geometrik, kalau salah satu skor 0 maka hasilnya 0. Tempat yang tidak terlihat
-    atau terlalu bising memang tidak layak untuk belajar, seberapa bagus pun faktor yang lain.
-    Bobot tetap menentukan faktor mana yang lebih berpengaruh pada nilai di antaranya.
+    Kenapa rata-rata geometrik dan bukan rata-rata biasa: pada rata-rata biasa, suara yang sangat
+    tenang bisa menutupi ruangan yang gelap gulita (lux 0 dan 30 dB tetap mendapat 50, kuning).
+    Pada rata-rata geometrik, kalau salah satu skor 0 maka hasilnya 0. Tempat yang gelap atau
+    sangat bising memang tidak layak untuk belajar, seberapa bagus pun faktor yang lain.
+    Kedua faktor berbobot sama; kebutuhan yang berbeda diatur lewat lux_target dan noise_limit,
+    bukan lewat bobot.
     """
-    if mode not in MODES:
-        raise ValueError("mode tidak dikenal: %r" % (mode,))
-    w = MODES[mode]
-    return 100.0 * (light_score(lux) ** w["light"]) * (noise_score(db) ** w["noise"])
+    return 100.0 * math.sqrt(light_score(lux, lux_target) * noise_score(db, noise_limit))
 
 
 def status_for(score):
@@ -77,17 +83,18 @@ def noise_level(db):
     return "ramai"
 
 
-def rank_readings(readings, mode=DEFAULT_MODE):
+def rank_readings(readings, lux_target=LUX_TARGET, noise_limit=NOISE_LIMIT):
     """Beri skor dan peringkat ke daftar pembacaan.
 
     Tiap pembacaan adalah dict yang memuat minimal device_id, lux_avg, dan db.
+    Skor dihitung dengan kriteria lux_target dan noise_limit yang sama untuk semua lokasi.
     Hasilnya salinan yang sudah ditambah score, status, noise_level, rank, urut dari skor tertinggi.
     Skor yang sama diurutkan menurut device_id supaya hasilnya selalu sama.
     """
     scored = []
     for r in readings:
         item = dict(r)
-        item["score"] = round(comfort_score(r["lux_avg"], r["db"], mode), 1)
+        item["score"] = round(comfort_score(r["lux_avg"], r["db"], lux_target, noise_limit), 1)
         item["status"] = status_for(item["score"])
         item["noise_level"] = noise_level(r["db"])
         scored.append(item)

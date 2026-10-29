@@ -57,8 +57,8 @@ def main():
     def on_message(c, userdata, msg):
         # perintah dari hub: di HP asli ini yang memicu lampu hijau, kuning, atau merah di layar
         ctl = json.loads(msg.payload.decode("utf-8"))
-        print("  lampu status: %s | peringkat %s | skor %s | mode %s" % (
-            ctl.get("status"), ctl.get("rank"), ctl.get("score"), ctl.get("mode")))
+        print("  lampu status: %s | peringkat %s | skor %s" % (
+            ctl.get("status"), ctl.get("rank"), ctl.get("score")))
 
     client.on_connect = on_connect
     client.on_message = on_message

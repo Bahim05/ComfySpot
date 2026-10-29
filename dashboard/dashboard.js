@@ -1,7 +1,8 @@
 // Dashboard ComfySpot.
 // Alur: sambung ke broker lewat MQTT over WebSocket -> subscribe state dari hub (pesan retained, JSON)
 // -> tampilkan lokasi terbaik, kartu lokasi, grafik kebisingan per jam, dan tabel peringkat.
-// Tombol mode mengirim teks "hening" atau "ramai" ke hub. Grafik mini di kartu dikumpulkan di browser
+// Panel "Kebutuhan belajar" mengirim kriteria (minimal terang, batas bising) ke hub; hub menghitung ulang
+// skor semua lokasi. Grafik mini di kartu dikumpulkan di browser
 // dari pesan state yang masuk, jadi kosong lagi saat halaman dimuat ulang.
 // Semua teks dari broker dipasang lewat textContent: broker publik bisa diisi siapa saja.
 
@@ -9,7 +10,7 @@ const $ = id => document.getElementById(id);
 
 // Nama topic harus sama dengan shared/topics.py
 const topicState = pid => `comfyspot/${pid}/state`;
-const topicMode = pid => `comfyspot/${pid}/control/mode`;
+const topicCriteria = pid => `comfyspot/${pid}/control/criteria`;
 
 const BROKER_URL = 'wss://broker.hivemq.com:8884/mqtt';
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,40}$/;   // sama dengan halaman sensor
@@ -17,7 +18,7 @@ const HISTORY_MS = 5 * 60 * 1000;            // panjang grafik mini di kartu
 const SAMPLE_EVERY_MS = 1000;                // hub bisa publish 4 kali per detik; grafik mini cukup sekali per detik
 const GAP_MS = 5000;                         // jeda lebih lama dari ini digambar sebagai putus, bukan garis lurus
 const STALE_AFTER_MS = 15000;                // hub publish tiap detik; lebih lama dari ini berarti hub berhenti
-const MODE_TIMEOUT_MS = 6000;
+const CRITERIA_TIMEOUT_MS = 6000;
 const RENDER_GAP_MS = 250;
 
 const STATUS_LABEL = { hijau: 'Nyaman', kuning: 'Cukup', merah: 'Kurang' };
@@ -25,7 +26,10 @@ const NOISE_LABEL = { sepi: 'Sepi', sedang: 'Sedang', ramai: 'Ramai' };
 // Label cahaya untuk tampilan saja. 300 lux adalah LUX_TARGET di shared/rules.py (skor cahaya penuh).
 const lightLabel = lux => lux == null ? '-' : lux >= 300 ? 'terang' : lux >= 100 ? 'redup' : 'gelap';
 const lightText = r => lightLabel(r.lux) + (r.lux_stable ? '' : ', tidak stabil');
-const MODE_LABEL = { hening: 'Hening', ramai: 'Ramai' };
+// Kriteria skor; standar dan rentangnya sama dengan shared/rules.py (rentang di luar ini ditolak hub)
+const CRITERIA_STANDARD = { lux_target: 300, noise_limit: 55 };
+const LUX_RANGE = [50, 1000];
+const NOISE_RANGE = [40, 80];
 const SOURCE_LABEL = { termux: 'Termux', sensor: 'Sensor browser', manual: 'Manual (uji alur)' };
 const SERIES_SLOTS = 4;   // warna lokasi --s1..--s4 di CSS; lokasi kelima dan seterusnya abu-abu
 
@@ -34,8 +38,9 @@ const DEMO = new URLSearchParams(location.search).has('demo');
 let client = null;
 let pid = null;
 let state = null;
-let pendingMode = null;
+let pendingCriteria = null;                  // kriteria yang sudah dikirim tetapi belum dipakai hub
 let pendingTimer = null;
+let criteriaEditing = false;                 // true selama slider digeser, supaya state dari hub tidak menimpanya
 let lastRender = 0;
 let renderQueued = false;
 let hourlySig = '';
@@ -130,13 +135,21 @@ function cleanState(raw) {
   }
   return {
     updated_ms: num(raw.updated_ms),
-    mode: MODE_LABEL[raw.mode] ? raw.mode : null,
+    criteria: cleanCriteria(raw.criteria),
     ranking,
     offline: ids(raw.offline),
     waiting_light: ids(raw.waiting_light),
     hourly_db: hourly,
     busiest_hours: busiest
   };
+}
+
+// Kriteria dari state; null jika tidak ada atau tidak masuk akal (hub versi lama, atau pesan rusak)
+function cleanCriteria(c) {
+  if (!c || typeof c !== 'object') return null;
+  const ok = (v, [lo, hi]) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+  return ok(c.lux_target, LUX_RANGE) && ok(c.noise_limit, NOISE_RANGE)
+    ? { lux_target: c.lux_target, noise_limit: c.noise_limit } : null;
 }
 
 function handleState(st) {
@@ -154,7 +167,7 @@ function handleState(st) {
     history.set(r.device_id, list);
   }
   for (const loc of st.hourly_db.keys()) colorFor(loc);
-  if (pendingMode && st.mode === pendingMode) { clearPending(); clearNotice('mode'); }
+  if (pendingCriteria && st.criteria && sameCriteria(st.criteria, pendingCriteria)) { clearPending(); clearNotice('criteria'); }
   scheduleRender();
 }
 
@@ -179,7 +192,7 @@ function scheduleRender() {
 }
 
 function render() {
-  renderMode();
+  renderCriteria();
   renderBest();
   renderCards();
   renderHourly(false);
@@ -201,8 +214,7 @@ function renderBest() {
   $('best-name').textContent = top.location;
   const parts = [
     'Cahaya ' + fmt0(top.lux) + ' lux',
-    'Kebisingan ' + fmt1(top.db) + ' dB relatif' + (top.noise_level ? ' (' + NOISE_LABEL[top.noise_level].toLowerCase() + ')' : ''),
-    'Mode ' + (MODE_LABEL[state.mode] || '-').toLowerCase()
+    'Kebisingan ' + fmt1(top.db) + ' dB relatif' + (top.noise_level ? ' (' + NOISE_LABEL[top.noise_level].toLowerCase() + ')' : '')
   ];
   $('best-meta').textContent = parts.join('  ·  ');
   $('best-value').textContent = fmt1(top.score);
@@ -522,8 +534,9 @@ function renderTable() {
   }
   if (!rows.length) rows.push(h('tr', {}, h('td', { colspan: 7, style: 'color:var(--muted)', text: state ? 'Belum ada lokasi.' : 'Belum ada data.' })));
   $('rank-body').replaceChildren(...rows);
-  $('rank-sub').textContent = state && state.mode
-    ? 'Urut dari skor kenyamanan tertinggi, mode ' + MODE_LABEL[state.mode].toLowerCase() + '.'
+  $('rank-sub').textContent = state && state.criteria
+    ? 'Urut dari skor kenyamanan tertinggi, dengan minimal terang ' + fmt0(state.criteria.lux_target) +
+      ' lux dan batas bising ' + fmt0(state.criteria.noise_limit) + ' dB relatif.'
     : 'Urut dari skor kenyamanan tertinggi.';
 }
 
@@ -541,7 +554,7 @@ function renderFreshness() {
   }
 }
 
-// Satu baris pemberitahuan. src mencatat asalnya (conn, stale, mode) supaya tiap bagian hanya menghapus pesannya sendiri.
+// Satu baris pemberitahuan. src mencatat asalnya (conn, stale, criteria) supaya tiap bagian hanya menghapus pesannya sendiri.
 function setNotice(text, kind, src) {
   const el = $('notice');
   el.textContent = text;
@@ -559,37 +572,55 @@ function clearNotice(src) {
 
 function noticeSource() { return $('notice').hidden ? '' : $('notice').dataset.src; }
 
-// ---------- mode ----------
+// ---------- kebutuhan belajar (kriteria) ----------
 
-function renderMode() {
-  const current = state ? state.mode : null;
-  const usable = DEMO || (client && client.connected);
-  document.querySelectorAll('.mode-btn').forEach(btn => {
-    const m = btn.dataset.mode;
-    btn.setAttribute('aria-pressed', String((pendingMode || current) === m));
-    btn.classList.toggle('pending', pendingMode === m);
-    btn.textContent = MODE_LABEL[m] + (pendingMode === m ? '...' : '');
-    btn.disabled = !usable;
-  });
+const luxInput = $('crit-lux');
+const noiseInput = $('crit-noise');
+
+const sliderCriteria = () => ({ lux_target: Number(luxInput.value), noise_limit: Number(noiseInput.value) });
+const sameCriteria = (a, b) => a.lux_target === b.lux_target && a.noise_limit === b.noise_limit;
+
+function showCriteriaValues(c) {
+  $('crit-lux-val').textContent = fmt0(c.lux_target) + ' lux';
+  $('crit-noise-val').textContent = fmt0(c.noise_limit) + ' dB';
 }
 
-function setMode(m) {
-  if (!MODE_LABEL[m] || (state && state.mode === m && !pendingMode)) return;
-  if (DEMO) { demoMode = m; handleState(demoState(Date.now())); return; }
+function renderCriteria() {
+  const usable = DEMO || (client && client.connected);
+  const active = state ? state.criteria : null;
+  luxInput.disabled = noiseInput.disabled = !usable;
+  // Slider mengikuti hub, kecuali sedang digeser atau masih menunggu hub memakai nilai yang baru dikirim
+  const follow = active && !criteriaEditing && !pendingCriteria;
+  if (follow) {
+    luxInput.value = active.lux_target;
+    noiseInput.value = active.noise_limit;
+  }
+  showCriteriaValues(follow ? active : sliderCriteria());
+  // tombol standar mati kalau kriteria yang berlaku sudah standar, supaya terlihat tidak ada yang perlu dikembalikan
+  const current = pendingCriteria || active;
+  $('crit-reset').disabled = !usable || (!!current && sameCriteria(current, CRITERIA_STANDARD));
+  $('crit-status').textContent = pendingCriteria ? 'Mengirim ke hub...'
+    : state && !active ? 'Hub belum mengirim kriteria, slider menampilkan nilai standar.' : '';
+}
+
+function sendCriteria(c) {
+  if (!pendingCriteria && state && state.criteria && sameCriteria(state.criteria, c)) { renderCriteria(); return; }
+  if (DEMO) { demoCriteria = c; handleState(demoState(Date.now())); return; }
   if (!client || !client.connected) return;
-  client.publish(topicMode(pid), m, { qos: 1 });
-  pendingMode = m;
+  // retain: hub yang baru nyala langsung memakai kriteria terakhir
+  client.publish(topicCriteria(pid), JSON.stringify(c), { qos: 1, retain: true });
+  pendingCriteria = c;
   clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
-    pendingMode = null;
-    setNotice('Hub belum menanggapi pergantian mode. Pastikan hub.py berjalan dengan PROJECT_ID yang sama.', 'warn', 'mode');
-    renderMode();
-  }, MODE_TIMEOUT_MS);
-  renderMode();
+    pendingCriteria = null;
+    setNotice('Hub belum memakai kebutuhan yang baru. Pastikan hub.py berjalan dengan PROJECT_ID yang sama.', 'warn', 'criteria');
+    renderCriteria();
+  }, CRITERIA_TIMEOUT_MS);
+  renderCriteria();
 }
 
 function clearPending() {
-  pendingMode = null;
+  pendingCriteria = null;
   clearTimeout(pendingTimer);
 }
 
@@ -675,7 +706,13 @@ $('pid-form').addEventListener('submit', e => {
   connect(value);
 });
 
-document.querySelectorAll('.mode-btn').forEach(btn => btn.addEventListener('click', () => setMode(btn.dataset.mode)));
+// Kirim saat slider dilepas (change), bukan tiap pergeseran (input), supaya broker tidak dibanjiri
+for (const input of [luxInput, noiseInput]) {
+  input.addEventListener('input', () => { criteriaEditing = true; showCriteriaValues(sliderCriteria()); });
+  input.addEventListener('change', () => { criteriaEditing = false; sendCriteria(sliderCriteria()); });
+  input.addEventListener('blur', () => { criteriaEditing = false; });
+}
+$('crit-reset').addEventListener('click', () => sendCriteria({ ...CRITERIA_STANDARD }));
 
 // ---------- tema ----------
 
@@ -698,7 +735,7 @@ $('theme-btn').addEventListener('click', () => {
 // Hanya untuk screenshot desain. Rumus skornya salinan shared/rules.py supaya angka contoh masuk akal.
 
 const DEMO_NOW_HOUR = 15;
-let demoMode = 'hening';
+let demoCriteria = CRITERIA_STANDARD;
 const DEMO_SITES = [
   { device_id: 'edge1', location: 'Selasar Gedung A', lux: 330, db: 42, ph: 0.3 },
   { device_id: 'edge2', location: 'Kantin', lux: 420, db: 62, ph: 1.7 },
@@ -710,23 +747,22 @@ const DEMO_HOURLY = {
   'Ruang Diskusi': [7, 41.0, 46.5, null, 52.3, 51.0, 47.8, 49.2, 53.6, 50.4]
 };
 
-function demoComfort(lux, db, mode) {
-  const curve = [[40, 1], [55, 0.6], [75, 0]];
+function demoComfort(lux, db, c) {
+  const curve = [[c.noise_limit - 15, 1], [c.noise_limit, 0.6], [c.noise_limit + 20, 0]];
   let ns = curve[curve.length - 1][1];
   if (db <= curve[0][0]) ns = curve[0][1];
   else for (let i = 0; i < curve.length - 1; i++) {
     const [d0, s0] = curve[i], [d1, s1] = curve[i + 1];
     if (db <= d1) { ns = s0 + (s1 - s0) * (db - d0) / (d1 - d0); break; }
   }
-  const w = mode === 'ramai' ? { light: 0.6, noise: 0.4 } : { light: 0.3, noise: 0.7 };
-  return 100 * Math.min(1, Math.max(0, lux / 300)) ** w.light * ns ** w.noise;
+  return 100 * Math.sqrt(Math.min(1, Math.max(0, lux / c.lux_target)) * ns);
 }
 
 function demoState(t) {
   const ranking = DEMO_SITES.map(site => {
     const lux = site.lux + 25 * Math.sin(t / 41000 + site.ph);
     const db = site.db + 2.2 * Math.sin(t / 23000 + site.ph) + 1.1 * Math.sin(t / 6100 + 2 * site.ph);
-    const score = Math.round(demoComfort(lux, db, demoMode) * 10) / 10;
+    const score = Math.round(demoComfort(lux, db, demoCriteria) * 10) / 10;
     return {
       device_id: site.device_id, location: site.location, score,
       status: score >= 75 ? 'hijau' : score >= 50 ? 'kuning' : 'merah',
@@ -742,7 +778,7 @@ function demoState(t) {
     busiest[loc] = arr.map((v, hr) => [v, hr]).filter(([v]) => v !== null).sort((a, b) => b[0] - a[0]).slice(0, 3).map(([, hr]) => hr);
   }
   return cleanState({
-    updated_ms: t, mode: demoMode, best: ranking[0].device_id, ranking,
+    updated_ms: t, criteria: demoCriteria, best: ranking[0].device_id, ranking,
     offline: ['edge4'], waiting_light: ['edge5'], hourly_db: hourly, busiest_hours: busiest
   });
 }

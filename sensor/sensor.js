@@ -172,7 +172,7 @@ function handleControl(payload) {
     $('v-src').textContent = ctl.lux_source === 'termux' ? 'Termux (lewat hub)' : String(ctl.lux_source);
   }
   setStatus(status, labels[status],
-    'Peringkat ' + ctl.rank + ' | skor ' + ctl.score + ' | mode ' + ctl.mode + (ctl.best ? ' | terbaik' : ''));
+    'Peringkat ' + ctl.rank + ' | skor ' + ctl.score + (ctl.best ? ' | terbaik' : ''));
 }
 
 // ---------- koneksi ----------

@@ -5,7 +5,8 @@ Tugasnya:
      lalu menggabungkan keduanya per device_id,
   2. mengolah data (shared/processing.py) lalu memberi skor dan peringkat (shared/rules.py),
   3. publish state untuk dashboard dan perintah control untuk tiap HP (lampu status),
-  4. menerima pilihan mode dari dashboard (topic control/mode).
+  4. menerima kriteria kebutuhan belajar dari dashboard (topic control/criteria): minimal terang dan
+     batas bising, berlaku untuk semua lokasi.
 
 Logika dipisah ke kelas Hub tanpa MQTT, jadi bisa dites tanpa broker (tests/test_hub.py).
 """
@@ -38,9 +39,10 @@ def _number(value):
 
 
 class Hub:
-    def __init__(self, offsets=None, mode=rules.DEFAULT_MODE):
+    def __init__(self, offsets=None):
         self.offsets = offsets or {}      # offset kalibrasi dB per device_id
-        self.mode = mode
+        # kriteria skor yang berlaku untuk semua lokasi; diubah dari dashboard lewat handle_criteria
+        self.criteria = {"lux_target": rules.LUX_TARGET, "noise_limit": rules.NOISE_LIMIT}
         self.processors = {}
         self.latest = {}                  # pembacaan terakhir per device_id
         self.hourly = rules.HourlyStats()
@@ -107,14 +109,32 @@ class Hub:
             self.hourly.add(location, hour, result["db"], result["lux_avg"])
             return self.latest[device_id]
 
-    def set_mode(self, text):
-        """Terima pilihan mode dari dashboard. Teks yang tidak dikenal diabaikan."""
-        text = (text or "").strip().lower()
-        if text in rules.MODES:
-            with self.lock:
-                self.mode = text
-            return True
-        return False
+    def handle_criteria(self, payload):
+        """Terima kriteria dari dashboard: JSON {"lux_target": angka, "noise_limit": angka}.
+
+        Topic ini bisa ditulis siapa saja di broker publik, jadi validasinya ketat. Pesan yang rusak,
+        bukan dict, kuncinya kurang, atau nilainya bukan angka terbatas di dalam rentang diabaikan:
+        kriteria lama tetap dipakai dan hitungan invalid bertambah. Kembalikan True jika diterima.
+        """
+        try:
+            data = json.loads(payload.decode("utf-8") if isinstance(payload, bytes) else payload)
+        except (TypeError, ValueError, UnicodeDecodeError):
+            data = None
+        lux_target = data.get("lux_target") if isinstance(data, dict) else None
+        noise_limit = data.get("noise_limit") if isinstance(data, dict) else None
+        lux_lo, lux_hi = rules.LUX_TARGET_RANGE
+        noise_lo, noise_hi = rules.NOISE_LIMIT_RANGE
+        if not (_number(lux_target) and lux_lo <= lux_target <= lux_hi
+                and _number(noise_limit) and noise_lo <= noise_limit <= noise_hi):
+            self.invalid += 1
+            return False
+        with self.lock:
+            self.criteria = {"lux_target": float(lux_target), "noise_limit": float(noise_limit)}
+        return True
+
+    def get_criteria(self):
+        with self.lock:
+            return dict(self.criteria)
 
     # ---------- keluaran ----------
 
@@ -123,11 +143,11 @@ class Hub:
         with self.lock:
             online = [r for r in self.latest.values() if now - r["last_seen"] <= OFFLINE_AFTER_S]
             offline = sorted(r["device_id"] for r in self.latest.values() if now - r["last_seen"] > OFFLINE_AFTER_S)
-            ranked = rules.rank_readings(online, self.mode)
+            criteria = dict(self.criteria)
+            ranked = rules.rank_readings(online, criteria["lux_target"], criteria["noise_limit"])
             hourly = {loc: [None if v is None else round(v, 1) for v in self.hourly.profile(loc)]
                       for loc in self.hourly.locations()}
             busiest = {loc: self.hourly.busiest_hours(loc) for loc in self.hourly.locations()}
-            mode = self.mode
             ranked_ids = {r["device_id"] for r in ranked}
             # perangkat yang mikrofonnya sudah mengirim tetapi data cahayanya belum ada (skrip Termux belum jalan)
             waiting = sorted(d for d, t in self.waiting.items()
@@ -135,7 +155,7 @@ class Hub:
 
         state = {
             "updated_ms": int(now * 1000),
-            "mode": mode,
+            "criteria": criteria,
             "best": ranked[0]["device_id"] if ranked else None,
             "ranking": [
                 {
@@ -154,7 +174,7 @@ class Hub:
         controls = {
             r["device_id"]: {
                 "rank": r["rank"], "score": r["score"], "status": r["status"],
-                "mode": mode, "best": r["rank"] == 1, "updated_ms": int(now * 1000),
+                "best": r["rank"] == 1, "updated_ms": int(now * 1000),
                 # angka hasil olahan dikirim balik supaya HP bisa menampilkan cahaya dan dB yang dipakai hub
                 "lux": round(r["lux_avg"], 1), "lux_source": r["lux_source"], "db": round(r["db"], 1),
             }
@@ -217,7 +237,7 @@ def main():
             return
         print("Tersambung ke %s:%s, PROJECT_ID=%s" % (config.BROKER_HOST, config.BROKER_PORT, pid))
         # subscribe dilakukan di sini supaya otomatis diulang setelah koneksi terputus
-        c.subscribe([(topics.telemetry_all(pid), 0), (topics.light_all(pid), 0), (topics.mode(pid), 1)])
+        c.subscribe([(topics.telemetry_all(pid), 0), (topics.light_all(pid), 0), (topics.criteria(pid), 1)])
 
     publish_lock = threading.Lock()
     last_publish = [0.0]
@@ -234,9 +254,19 @@ def main():
 
     def on_message(c, userdata, msg):
         now = time.time()
-        if msg.topic == topics.mode(pid):
-            if hub.set_mode(msg.payload.decode("utf-8", "ignore")):
-                print("Mode diubah menjadi", hub.mode)
+        if msg.topic == topics.criteria(pid):
+            before = hub.get_criteria()
+            if hub.handle_criteria(msg.payload):
+                after = hub.get_criteria()
+                if after != before:
+                    print("Kriteria diubah: minimal terang %g lux, batas bising %g dB" % (
+                        after["lux_target"], after["noise_limit"]))
+                    # langsung publish supaya dashboard dan lampu HP segera memakai skor baru
+                    with publish_lock:
+                        last_publish[0] = now
+                    publish_snapshot(now)
+            else:
+                print("Pesan kriteria ditolak (bukan JSON lux_target dan noise_limit dalam rentang)")
             return
         parts = msg.topic.split("/")   # comfyspot/PID/edge/<device>/telemetry atau .../light
         device_id, kind = parts[-2], parts[-1]

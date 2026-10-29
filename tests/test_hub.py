@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -18,7 +19,7 @@ class HubTests(unittest.TestCase):
     def test_ranking_and_controls(self):
         hub = Hub()
         now = self.feed(hub, "edge1", 450, 0.004, "Selasar")
-        self.feed(hub, "edge2", 200, 0.12, "Kantin")
+        self.feed(hub, "edge2", 120, 0.12, "Kantin")
         state, controls = hub.snapshot(now)
         self.assertEqual(state["best"], "edge1")
         self.assertEqual([x["location"] for x in state["ranking"]], ["Selasar", "Kantin"])
@@ -29,19 +30,68 @@ class HubTests(unittest.TestCase):
         self.assertGreater(controls["edge2"]["db"], controls["edge1"]["db"])
         self.assertEqual(controls["edge1"]["lux_source"], "sensor")
 
-    def test_mode_message_changes_ranking(self):
-        hub = Hub()
-        now = self.feed(hub, "terang", 500, 0.12, "Terang ribut")
-        self.feed(hub, "redup", 120, 0.004, "Redup tenang")
-        self.assertEqual(hub.snapshot(now)[0]["best"], "redup")
-        self.assertTrue(hub.set_mode("RAMAI "))
-        self.assertEqual(hub.snapshot(now)[0]["best"], "terang")
+    # ---------- kriteria dari dashboard ----------
 
-    def test_unknown_mode_is_ignored(self):
+    def test_valid_criteria_change_scores(self):
         hub = Hub()
-        self.assertFalse(hub.set_mode("bebas"))
-        self.assertFalse(hub.set_mode(None))
-        self.assertEqual(hub.mode, "hening")
+        now = self.feed(hub, "edge1", 200, 0.12, "Kantin")      # sekitar 61,6 dB
+        before = hub.snapshot(now)[0]["ranking"][0]
+        self.assertTrue(hub.handle_criteria(b'{"lux_target": 200, "noise_limit": 70}'))
+        self.assertEqual(hub.get_criteria(), {"lux_target": 200.0, "noise_limit": 70.0})
+        after = hub.snapshot(now)[0]["ranking"][0]
+        self.assertGreater(after["score"], before["score"])
+        self.assertEqual(before["status"], "kuning")
+        self.assertEqual(after["status"], "hijau")
+        self.assertEqual(hub.invalid, 0)
+
+    def test_criteria_range_edges_are_accepted(self):
+        hub = Hub()
+        self.assertTrue(hub.handle_criteria('{"lux_target": 50, "noise_limit": 80}'))
+        self.assertTrue(hub.handle_criteria('{"lux_target": 1000.0, "noise_limit": 40}'))
+        self.assertEqual(hub.get_criteria(), {"lux_target": 1000.0, "noise_limit": 40.0})
+
+    def test_bad_criteria_are_rejected(self):
+        hub = Hub()
+        standard = hub.get_criteria()
+        bad = [
+            b'{"lux_target": 300, "noise_limit": 55',          # JSON rusak
+            b'\xff\xfe',                                        # bukan UTF-8
+            b'',                                                # kosong (retained dihapus)
+            b'[300, 55]',                                       # bukan dict
+            b'"teks"',                                          # teks JSON
+            b'hening',                                          # teks biasa
+            b'{"lux_target": NaN, "noise_limit": 55}',
+            b'{"lux_target": 300, "noise_limit": Infinity}',
+            b'{"lux_target": true, "noise_limit": 55}',
+            b'{"lux_target": "300", "noise_limit": 55}',
+            b'{"lux_target": 300}',                             # kunci hilang
+            b'{"noise_limit": 55}',
+            b'{"lux_target": 49, "noise_limit": 55}',           # di luar rentang
+            b'{"lux_target": 1001, "noise_limit": 55}',
+            b'{"lux_target": 300, "noise_limit": 39.9}',
+            b'{"lux_target": 300, "noise_limit": 81}',
+            None,
+        ]
+        for payload in bad:
+            self.assertFalse(hub.handle_criteria(payload), payload)
+        self.assertEqual(hub.get_criteria(), standard)
+        self.assertEqual(hub.invalid, len(bad))
+
+    def test_state_has_criteria_and_no_mode(self):
+        hub = Hub()
+        now = self.feed(hub, "edge1", 450, 0.004, "Selasar")
+        state, controls = hub.snapshot(now)
+        self.assertEqual(state["criteria"], {"lux_target": 300.0, "noise_limit": 55.0})
+        self.assertNotIn("mode", state)
+        for ctl in controls.values():
+            self.assertNotIn("mode", ctl)
+
+    def test_dark_location_scores_zero(self):
+        hub = Hub()
+        now = self.feed(hub, "edge1", 0, 0.004, "Gudang gelap")
+        row = hub.snapshot(now)[0]["ranking"][0]
+        self.assertEqual(row["score"], 0.0)
+        self.assertEqual(row["status"], "merah")
 
     def test_invalid_payloads_are_rejected(self):
         hub = Hub()
@@ -148,7 +198,6 @@ class HubTests(unittest.TestCase):
         self.assertEqual(other.hourly.locations(), ["Selasar"])
 
     def test_state_is_json_serializable(self):
-        import json
         hub = Hub()
         now = self.feed(hub, "edge1", 450, 0.004, "Selasar")
         state, controls = hub.snapshot(now)

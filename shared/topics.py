@@ -4,7 +4,7 @@ Struktur (PID = PROJECT_ID kelompok):
   comfyspot/PID/edge/<device>/telemetry   HP -> broker : RMS mikrofon dari halaman sensor (lux ikut jika ada)
   comfyspot/PID/edge/<device>/light       HP -> broker : lux dari skrip Termux di HP yang sama
   comfyspot/PID/edge/<device>/control     hub -> HP    : skor, peringkat, warna lampu status
-  comfyspot/PID/control/mode              dashboard -> hub : mode "hening" atau "ramai"
+  comfyspot/PID/control/criteria          dashboard -> hub : kriteria {"lux_target", "noise_limit"} (retained)
   comfyspot/PID/state                     hub -> dashboard : peringkat dan statistik per jam
 """
 
@@ -22,8 +22,9 @@ def edge_control(pid, device):
     return "comfyspot/%s/edge/%s/control" % (pid, device)
 
 
-def mode(pid):
-    return "comfyspot/%s/control/mode" % pid
+def criteria(pid):
+    # dashboard mem-publish dengan retain, jadi hub yang baru nyala langsung memakai kriteria terakhir
+    return "comfyspot/%s/control/criteria" % pid
 
 
 def state(pid):

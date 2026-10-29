@@ -7,7 +7,7 @@ Saat perpus penuh, mahasiswa harus cari tempat belajar lain tanpa tahu mana yang
 ## Cara kerja
 
 ```
-HP lokasi A --+                                     +-- dashboard (pilih mode, lihat peringkat)
+HP lokasi A --+                                     +-- dashboard (atur kebutuhan dan lihat peringkat)
               +-- MQTT --> broker (cloud) <-- MQTT -+
 HP lokasi B --+                                     +-- hub (laptop): olah data, skor, peringkat
    telemetry mengalir ke atas, control mengalir ke bawah
@@ -17,7 +17,14 @@ Ada dua HP atau lebih sebagai edge device, dan masing-masing memakai dua sensor:
 
 Protokolnya MQTT ke broker publik HiveMQ. HP dan dashboard memakai MQTT over WebSocket (port 8884), sedangkan hub memakai MQTT over TLS (port 8883).
 
-Komunikasinya dua arah. HP mengirim telemetry ke hub, lalu hub mengirim balik skor, peringkat, dan warna lampu status ke tiap HP. Dashboard mengirim pilihan mode ("hening" atau "ramai") ke hub. Semua perangkat berada di WiFi atau hotspot yang sama.
+Komunikasinya dua arah, baik antara HP dan hub maupun antara dashboard dan hub:
+
+- HP ke hub: telemetry (RMS mikrofon dari halaman sensor) dan light (lux dari Termux).
+- Hub ke HP: control, berisi skor, peringkat, dan warna lampu status lokasi itu.
+- Dashboard ke hub: criteria, yaitu kebutuhan belajar (minimal terang dan batas bising) yang diatur pengguna.
+- Hub ke dashboard: state, berisi peringkat semua lokasi, kriteria yang berlaku, dan statistik per jam.
+
+Semua perangkat berada di WiFi atau hotspot yang sama.
 
 ## Pengolahan data
 
@@ -34,14 +41,28 @@ Respons real time: halaman sensor mengirim RMS dua kali per detik, dan hub mem-p
 
 Di `shared/rules.py`:
 
-- Skor cahaya naik linear sampai 300 lux. Skor kebisingan 1,0 sampai 40 dB, turun ke 0,6 di 55 dB, dan ke 0 di 75 dB.
-- Skor kenyamanan 0 sampai 100 adalah rata-rata geometrik berbobot kedua skor itu: `100 * skor_cahaya^bobot_cahaya * skor_suara^bobot_suara`. Mode "hening" memberi bobot 0,3 untuk cahaya dan 0,7 untuk suara. Mode "ramai" memberi 0,6 dan 0,4.
-- Alasan memakai rata-rata geometrik: pada jumlah berbobot biasa, suara yang tenang bisa menutupi ruangan yang gelap gulita (lux 0 dan 34 dB tetap mendapat 70, kuning). Pada rata-rata geometrik, kalau salah satu skor 0 maka hasilnya 0, karena tempat yang gelap atau terlalu bising tidak layak untuk belajar walau faktor yang lain bagus.
+Skor memakai dua kriteria yang diatur dari dashboard dan berlaku untuk semua lokasi sekaligus:
+
+- **Minimal terang** (`lux_target`, standar 300 lux): cahaya yang dianggap sudah cukup untuk membaca. Diterima hub dari 50 sampai 1000 lux.
+- **Batas bising** (`noise_limit`, standar 55 dB relatif): kebisingan yang masih bisa ditoleransi. Diterima hub dari 40 sampai 80 dB.
+
+Rumusnya:
+
+```
+skor_terang = min(1, lux / lux_target)
+skor_sepi   = interpolasi linear kurva (limit - 15, 1,0), (limit, 0,6), (limit + 20, 0,0)
+              (1,0 jika db <= limit - 15, 0,0 jika db >= limit + 20)
+skor        = 100 * sqrt(skor_terang * skor_sepi)
+```
+
+- Dengan kriteria standar, skor sepi bernilai 1,0 sampai 40 dB, turun ke 0,6 di 55 dB, dan ke 0 di 75 dB. Menaikkan batas bising menggeser seluruh kurva: dengan batas 70 dB, suara 60 dB dinilai sama dengan 45 dB pada batas standar.
+- Kedua faktor berbobot sama. Kebutuhan yang berbeda diatur lewat kedua kriteria itu, bukan lewat bobot.
+- Alasan memakai rata-rata geometrik: pada rata-rata biasa, suara yang tenang bisa menutupi ruangan yang gelap gulita (lux 0 dan 30 dB tetap mendapat 50, kuning). Pada rata-rata geometrik, kalau salah satu skor 0 maka hasilnya 0, karena tempat yang gelap atau terlalu bising tidak layak untuk belajar walau faktor yang lain bagus.
 - Lampu status: hijau mulai skor 75, kuning mulai 50, selebihnya merah.
 - Lokasi diurutkan dari skor tertinggi. Perangkat yang diam lebih dari 15 detik dianggap offline dan keluar dari peringkat.
 - Rata-rata kebisingan per jam (0 sampai 23) dihitung sepanjang hari, dari sini diturunkan jam paling ramai tiap lokasi.
 
-Angka acuan 300 lux dan 55 dB berasal dari standar ruang baca (SNI 03-6197-2000 dan SNI 03-6386-2000) yang masih perlu dicocokkan dengan dokumen aslinya.
+Nilai standar 300 lux dan 55 dB berasal dari standar ruang baca (SNI 03-6197-2000 dan SNI 03-6386-2000) yang masih perlu dicocokkan dengan dokumen aslinya.
 
 ## Topic MQTT
 
@@ -49,9 +70,9 @@ Angka acuan 300 lux dan 55 dB berasal dari standar ruang baca (SNI 03-6197-2000 
 |---|---|---|
 | `comfyspot/<PROJECT_ID>/edge/<device>/telemetry` | HP ke hub | `{"device_id","location","sequence","mic_rms","sent_at_ms"}`, ditambah `lux` dan `lux_source` jika halaman punya data cahaya sendiri |
 | `comfyspot/<PROJECT_ID>/edge/<device>/light` | HP ke hub | `{"device_id","lux","lux_source","sent_at_ms"}` dari skrip Termux |
-| `comfyspot/<PROJECT_ID>/edge/<device>/control` | hub ke HP | `{"rank","score","status","mode","best","lux","lux_source","db","updated_ms"}` |
-| `comfyspot/<PROJECT_ID>/control/mode` | dashboard ke hub | teks `hening` atau `ramai` |
-| `comfyspot/<PROJECT_ID>/state` | hub ke dashboard | peringkat, offline, dB per jam, jam paling ramai |
+| `comfyspot/<PROJECT_ID>/edge/<device>/control` | hub ke HP | `{"rank","score","status","best","lux","lux_source","db","updated_ms"}` |
+| `comfyspot/<PROJECT_ID>/control/criteria` | dashboard ke hub | `{"lux_target","noise_limit"}`, retained supaya hub yang baru nyala langsung memakai nilai terakhir |
+| `comfyspot/<PROJECT_ID>/state` | hub ke dashboard | peringkat, `criteria` yang berlaku, offline, dB per jam, jam paling ramai |
 
 ## Menjalankan
 
@@ -102,7 +123,7 @@ Dashboard ada di folder `dashboard/` dan ikut dihosting GitHub Pages bersama hal
 python -m http.server 8000
 ```
 
-lalu buka `http://localhost:8000/dashboard/`. Isi PROJECT_ID yang sama dengan di `.env`, lalu tekan Sambungkan. Dashboard langsung menerima state terakhir dari hub (pesan retained) dan memperbaruinya tiap detik. Tombol Hening dan Ramai mengirim mode ke hub; tombol baru menyala setelah hub mengirim balik mode yang dipakai.
+lalu buka `http://localhost:8000/dashboard/`. Isi PROJECT_ID yang sama dengan di `.env`, lalu tekan Sambungkan. Dashboard langsung menerima state terakhir dari hub (pesan retained) dan memperbaruinya tiap detik. Panel Kebutuhan belajar mengatur minimal terang dan batas bising lewat dua slider, dan tombol Kembalikan standar memulihkan 300 lux dan 55 dB. Nilainya dikirim ke hub saat slider dilepas, lalu hub menghitung ulang skor semua lokasi.
 
 Yang tampil: lokasi terbaik beserta skornya, kartu tiap lokasi (skor, lampu status, lux, dB relatif, dan grafik skor beberapa menit terakhir), grafik kebisingan per jam dengan jam paling ramai, dan tabel peringkat yang menandai HP offline atau yang masih menunggu data cahaya. Grafik mini di kartu dikumpulkan oleh browser selama halaman terbuka, jadi kosong lagi setelah halaman dimuat ulang. PROJECT_ID terakhir diingat browser, jadi lain kali dashboard tersambung sendiri.
 

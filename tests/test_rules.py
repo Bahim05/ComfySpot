@@ -29,16 +29,22 @@ class ScoreTests(unittest.TestCase):
         self.assertAlmostEqual(r.comfort_score(500, 30), 100.0)
         self.assertAlmostEqual(r.comfort_score(0, 90), 0.0)
 
+    def test_known_values_with_standard_criteria(self):
+        cases = [
+            ((350, 35), 100.0), ((200, 48), 72.4), ((300, 60), 67.1), ((100, 30), 57.7),
+            ((300, 70), 38.7), ((197, 37.6), 81.0), ((141, 42.7), 66.0), ((0, 30), 0.0),
+        ]
+        for (lux, db), expected in cases:
+            self.assertAlmostEqual(r.comfort_score(lux, db), expected, places=1, msg=(lux, db))
+
     def test_dark_room_is_never_comfortable(self):
         # kasus nyata dari uji HP: lux 0 dan 34 dB dulu mendapat 70 (kuning) karena suaranya tenang
-        for mode in r.MODES:
-            score = r.comfort_score(0, 34, mode)
-            self.assertEqual(score, 0.0)
-            self.assertEqual(r.status_for(score), "merah")
+        score = r.comfort_score(0, 34)
+        self.assertEqual(score, 0.0)
+        self.assertEqual(r.status_for(score), "merah")
 
     def test_deafening_room_is_never_comfortable(self):
-        for mode in r.MODES:
-            self.assertEqual(r.comfort_score(500, 80, mode), 0.0)
+        self.assertEqual(r.comfort_score(500, 80), 0.0)
 
     def test_score_rises_with_light_and_falls_with_noise(self):
         lights = [r.comfort_score(lux, 40) for lux in range(0, 400, 20)]
@@ -47,17 +53,17 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual(noises, sorted(noises, reverse=True))
 
     def test_dim_but_quiet_is_not_green(self):
-        self.assertEqual(r.status_for(r.comfort_score(100, 30, "hening")), "kuning")
+        self.assertEqual(r.status_for(r.comfort_score(100, 30)), "kuning")
 
-    def test_mode_changes_weighting(self):
-        # ruang terang tapi ribut: lebih layak di mode ramai daripada mode hening
-        quiet_mode = r.comfort_score(500, 65, "hening")
-        loud_ok_mode = r.comfort_score(500, 65, "ramai")
-        self.assertGreater(loud_ok_mode, quiet_mode)
+    def test_noise_limit_shifts_curve(self):
+        # batas bising 70 menggeser kurva 15 dB: 60 dB di sana sama dengan 45 dB pada standar 55
+        self.assertAlmostEqual(r.noise_score(60, noise_limit=70), r.noise_score(45))
+        self.assertAlmostEqual(r.comfort_score(300, 60, noise_limit=70), r.comfort_score(300, 45))
+        self.assertEqual(r.noise_curve(), [(40.0, 1.0), (55.0, 0.6), (75.0, 0.0)])
 
-    def test_unknown_mode(self):
-        with self.assertRaises(ValueError):
-            r.comfort_score(300, 40, "bebas")
+    def test_lux_target_sets_full_light(self):
+        self.assertEqual(r.light_score(150, lux_target=150), 1.0)
+        self.assertAlmostEqual(r.light_score(150), 0.5)
 
     def test_status_thresholds(self):
         self.assertEqual(r.status_for(75), "hijau")
@@ -74,7 +80,7 @@ class ScoreTests(unittest.TestCase):
 class RankTests(unittest.TestCase):
     def test_ranking_order_and_fields(self):
         readings = [
-            {"device_id": "edge2", "lux_avg": 200.0, "db": 62.0},
+            {"device_id": "edge2", "lux_avg": 120.0, "db": 62.0},
             {"device_id": "edge1", "lux_avg": 450.0, "db": 32.0},
         ]
         out = r.rank_readings(readings)
@@ -91,13 +97,13 @@ class RankTests(unittest.TestCase):
         ]
         self.assertEqual([x["device_id"] for x in r.rank_readings(readings)], ["a", "b"])
 
-    def test_mode_can_change_winner(self):
+    def test_criteria_can_change_winner(self):
         readings = [
             {"device_id": "terang_ribut", "lux_avg": 500.0, "db": 62.0},
             {"device_id": "redup_tenang", "lux_avg": 120.0, "db": 33.0},
         ]
-        self.assertEqual(r.rank_readings(readings, "hening")[0]["device_id"], "redup_tenang")
-        self.assertEqual(r.rank_readings(readings, "ramai")[0]["device_id"], "terang_ribut")
+        self.assertEqual(r.rank_readings(readings)[0]["device_id"], "redup_tenang")
+        self.assertEqual(r.rank_readings(readings, noise_limit=70)[0]["device_id"], "terang_ribut")
 
     def test_empty(self):
         self.assertEqual(r.rank_readings([]), [])

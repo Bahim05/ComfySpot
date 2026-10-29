@@ -18,3 +18,5 @@ data/*.tmp
 # berkas sampah dari Windows dan VS Code
 desktop.ini
 tempCodeRunnerFile.py
+
+.venv/

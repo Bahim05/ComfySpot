@@ -34,11 +34,6 @@
         <button type="submit" id="pid-btn" class="btn primary">Sambungkan</button>
       </form>
 
-      <div class="mode" role="group" aria-label="Mode penilaian">
-        <button type="button" class="mode-btn" data-mode="hening" aria-pressed="false">Hening</button>
-        <button type="button" class="mode-btn" data-mode="ramai" aria-pressed="false">Ramai</button>
-      </div>
-
       <button type="button" class="btn ghost theme-btn" id="theme-btn" title="Ganti tema">Tema: otomatis</button>
     </div>
   </header>
@@ -60,6 +55,29 @@
       <div class="hero"><span id="best-value">-</span><small>/100</small></div>
       <div id="best-chip"></div>
     </div>
+  </section>
+
+  <section class="card criteria" aria-labelledby="crit-title">
+    <div class="card-head">
+      <div>
+        <h2 id="crit-title">Kebutuhan belajar</h2>
+        <p class="section-sub">Atur seberapa terang dan seberapa sepi tempat yang dicari.</p>
+      </div>
+      <button type="button" class="btn ghost" id="crit-reset" title="300 lux dan 55 dB">Kembalikan standar</button>
+    </div>
+    <div class="crit-sliders">
+      <div class="crit-row">
+        <label for="crit-lux">Minimal terang</label>
+        <output id="crit-lux-val" for="crit-lux">300 lux</output>
+        <input id="crit-lux" type="range" min="50" max="1000" step="10" value="300">
+      </div>
+      <div class="crit-row">
+        <label for="crit-noise">Batas bising <small>(dB relatif)</small></label>
+        <output id="crit-noise-val" for="crit-noise">55 dB</output>
+        <input id="crit-noise" type="range" min="40" max="80" step="1" value="55">
+      </div>
+    </div>
+    <p class="crit-note">Skor dihitung ulang oleh hub dan berlaku untuk semua lokasi. <span id="crit-status"></span></p>
   </section>
 
   <section aria-labelledby="loc-title">
