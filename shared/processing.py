@@ -14,6 +14,13 @@ from collections import deque
 # Angka ini bukan standar. Selisihnya terhadap sound meter dikoreksi lewat offset kalibrasi.
 DB_REF_RMS = 1e-4
 
+# Panjang jendela rata-rata. Makin panjang makin halus tetapi makin lambat bereaksi:
+# jendela 10 detik membuat lampu butuh sekitar 10 detik untuk kembali normal setelah suara keras.
+# Suara dibuat lebih pendek dari cahaya karena suara berubah cepat dan terasa "tidak real time" kalau lambat,
+# sedangkan cahaya berubah pelan dan butuh sampel lebih banyak supaya simpangan bakunya berarti.
+LIGHT_WINDOW_S = 5
+MIC_WINDOW_S = 2
+
 
 def rms(samples):
     """Root Mean Square: akar dari rata-rata kuadrat sampel.
@@ -85,7 +92,7 @@ class Window:
 class SensorProcessor:
     """Pengolah data satu perangkat: cahaya (jenis A) dan suara (jenis B)."""
 
-    def __init__(self, light_window_s=10, mic_window_s=10, db_offset=0.0, cv_max=0.25):
+    def __init__(self, light_window_s=LIGHT_WINDOW_S, mic_window_s=MIC_WINDOW_S, db_offset=0.0, cv_max=0.25):
         self.light = Window(light_window_s)
         self.mic = Window(mic_window_s)
         self.db_offset = db_offset

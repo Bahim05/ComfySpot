@@ -23,15 +23,20 @@ Komunikasinya dua arah. HP mengirim telemetry ke hub, lalu hub mengirim balik sk
 
 Dua jenis pengolahan (`shared/processing.py`):
 
-1. Cahaya: rata-rata dalam jendela 10 detik dan simpangan baku untuk menilai kestabilan cahaya.
-2. Suara: RMS sinyal mikrofon, dirata-ratakan berdasarkan energi dalam jendela 10 detik, lalu diubah ke desibel relatif: `db = 20 * log10(rms / 1e-4) + offset_kalibrasi`.
+1. Cahaya: rata-rata dalam jendela 5 detik dan simpangan baku untuk menilai kestabilan cahaya.
+2. Suara: RMS sinyal mikrofon, dirata-ratakan berdasarkan energi dalam jendela 2 detik, lalu diubah ke desibel relatif: `db = 20 * log10(rms / 1e-4) + offset_kalibrasi`.
+
+Panjang jendela diatur lewat `LIGHT_WINDOW_S` dan `MIC_WINDOW_S` di `shared/processing.py`. Jendela pendek membuat lampu bereaksi cepat, jendela panjang membuat angkanya lebih halus. Suara dibuat lebih pendek karena berubah cepat. Dengan jendela 10 detik, lampu butuh sekitar 10 detik untuk kembali normal setelah suara keras berhenti.
+
+Respons real time: halaman sensor mengirim RMS dua kali per detik, dan hub mem-publish control segera setelah data masuk (paling cepat tiap 0,25 detik), tidak menunggu putaran berkala. Hasil ukur dengan broker lokal: lampu berubah sekitar 0,5 detik setelah suara keras muncul dan kembali normal sekitar 2 detik setelah suara berhenti. Lewat HiveMQ ditambah waktu jaringan.
 
 ## Algoritma
 
 Di `shared/rules.py`:
 
 - Skor cahaya naik linear sampai 300 lux. Skor kebisingan 1,0 sampai 40 dB, turun ke 0,6 di 55 dB, dan ke 0 di 75 dB.
-- Skor kenyamanan 0 sampai 100 adalah jumlah berbobot kedua skor itu. Mode "hening" memberi bobot 0,3 untuk cahaya dan 0,7 untuk suara. Mode "ramai" memberi 0,6 dan 0,4.
+- Skor kenyamanan 0 sampai 100 adalah rata-rata geometrik berbobot kedua skor itu: `100 * skor_cahaya^bobot_cahaya * skor_suara^bobot_suara`. Mode "hening" memberi bobot 0,3 untuk cahaya dan 0,7 untuk suara. Mode "ramai" memberi 0,6 dan 0,4.
+- Alasan memakai rata-rata geometrik: pada jumlah berbobot biasa, suara yang tenang bisa menutupi ruangan yang gelap gulita (lux 0 dan 34 dB tetap mendapat 70, kuning). Pada rata-rata geometrik, kalau salah satu skor 0 maka hasilnya 0, karena tempat yang gelap atau terlalu bising tidak layak untuk belajar walau faktor yang lain bagus.
 - Lampu status: hijau mulai skor 75, kuning mulai 50, selebihnya merah.
 - Lokasi diurutkan dari skor tertinggi. Perangkat yang diam lebih dari 15 detik dianggap offline dan keluar dari peringkat.
 - Rata-rata kebisingan per jam (0 sampai 23) dihitung sepanjang hari, dari sini diturunkan jam paling ramai tiap lokasi.

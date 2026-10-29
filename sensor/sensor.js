@@ -10,7 +10,7 @@ const topicTelemetry = (pid, dev) => `comfyspot/${pid}/edge/${dev}/telemetry`;
 const topicControl = (pid, dev) => `comfyspot/${pid}/edge/${dev}/control`;
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,40}$/;   // melarang / + # supaya tidak merusak struktur topic
-const SEND_EVERY_MS = 1000;
+const SEND_EVERY_MS = 500;                    // dua kali per detik, supaya hub dan lampu bereaksi cepat
 const POLL_EVERY_MS = 40;                     // buffer 2048 sampel pada 48 kHz berdurasi sekitar 43 ms
 
 let client = null;

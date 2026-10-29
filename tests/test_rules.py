@@ -29,6 +29,26 @@ class ScoreTests(unittest.TestCase):
         self.assertAlmostEqual(r.comfort_score(500, 30), 100.0)
         self.assertAlmostEqual(r.comfort_score(0, 90), 0.0)
 
+    def test_dark_room_is_never_comfortable(self):
+        # kasus nyata dari uji HP: lux 0 dan 34 dB dulu mendapat 70 (kuning) karena suaranya tenang
+        for mode in r.MODES:
+            score = r.comfort_score(0, 34, mode)
+            self.assertEqual(score, 0.0)
+            self.assertEqual(r.status_for(score), "merah")
+
+    def test_deafening_room_is_never_comfortable(self):
+        for mode in r.MODES:
+            self.assertEqual(r.comfort_score(500, 80, mode), 0.0)
+
+    def test_score_rises_with_light_and_falls_with_noise(self):
+        lights = [r.comfort_score(lux, 40) for lux in range(0, 400, 20)]
+        self.assertEqual(lights, sorted(lights))
+        noises = [r.comfort_score(300, db) for db in range(30, 90, 5)]
+        self.assertEqual(noises, sorted(noises, reverse=True))
+
+    def test_dim_but_quiet_is_not_green(self):
+        self.assertEqual(r.status_for(r.comfort_score(100, 30, "hening")), "kuning")
+
     def test_mode_changes_weighting(self):
         # ruang terang tapi ribut: lebih layak di mode ramai daripada mode hening
         quiet_mode = r.comfort_score(500, 65, "hening")

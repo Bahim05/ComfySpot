@@ -95,6 +95,22 @@ class SensorProcessorTests(unittest.TestCase):
         b = p.SensorProcessor(db_offset=4.0).update(0, 300, 0.01)["db"]
         self.assertAlmostEqual(b - a, 4.0)
 
+    def test_loud_burst_fades_quickly(self):
+        # Jendela suara pendek: setelah teriakan berhenti, desibel kembali normal dalam beberapa detik
+        # (dengan jendela 10 detik, angkanya masih tinggi lama setelah suara berhenti).
+        sp = p.SensorProcessor()
+        t = 0.0
+        while t < 10:                       # 10 detik tenang, dua pembacaan per detik
+            quiet = sp.update(t, 400.0, 0.005)["db"]
+            t += 0.5
+        loud = sp.update(t, 400.0, 0.3)["db"]
+        self.assertGreater(loud, quiet + 15)          # naik langsung pada pembacaan pertama
+        t += 0.5
+        while t < 10.5 + p.MIC_WINDOW_S + 1:
+            after = sp.update(t, 400.0, 0.005)["db"]
+            t += 0.5
+        self.assertAlmostEqual(after, quiet, places=3)
+
     def test_dark_room_does_not_crash(self):
         out = p.SensorProcessor().update(0, 0.0, 0.0)
         self.assertTrue(out["lux_stable"])

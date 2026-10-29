@@ -22,7 +22,9 @@ from shared.processing import SensorProcessor
 
 OFFLINE_AFTER_S = 15      # perangkat yang diam lebih lama dari ini dianggap offline
 LIGHT_MAX_AGE_S = 5       # lux dari Termux yang lebih tua dari ini dianggap basi dan tidak dipakai
-PUBLISH_EVERY_S = 2       # selang publish state dan control
+PUBLISH_EVERY_S = 1       # publish berkala (menjaga pesan retained segar dan mendeteksi perangkat offline)
+MIN_PUBLISH_GAP_S = 0.25  # jarak minimal antar publish yang dipicu data baru, supaya broker publik tidak kebanjiran
+PRINT_EVERY_S = 2         # selang mencetak ringkasan ke terminal
 SAVE_EVERY_S = 30         # selang menyimpan statistik per jam ke file
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 HOURLY_FILE = os.path.join(DATA_DIR, "hourly.json")
@@ -217,6 +219,19 @@ def main():
         # subscribe dilakukan di sini supaya otomatis diulang setelah koneksi terputus
         c.subscribe([(topics.telemetry_all(pid), 0), (topics.light_all(pid), 0), (topics.mode(pid), 1)])
 
+    publish_lock = threading.Lock()
+    last_publish = [0.0]
+
+    def publish_snapshot(now):
+        """Hitung peringkat lalu publish state dan control. Mengembalikan state."""
+        state, controls = hub.snapshot(now)
+        # retained: broker menyimpan pesan terakhir, jadi dashboard atau HP yang baru buka langsung dapat isinya.
+        # QoS 0 cukup karena pesan berikutnya datang dalam hitungan detik; yang lama tidak perlu dikirim ulang.
+        client.publish(topics.state(pid), json.dumps(state), qos=0, retain=True)
+        for device_id, ctl in controls.items():
+            client.publish(topics.edge_control(pid, device_id), json.dumps(ctl), qos=0, retain=True)
+        return state
+
     def on_message(c, userdata, msg):
         now = time.time()
         if msg.topic == topics.mode(pid):
@@ -238,22 +253,31 @@ def main():
             append_log([time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)), device_id, r["location"],
                         round(r["lux_raw"], 1), round(r["lux_avg"], 1), r["lux_source"],
                         round(r["mic_rms_avg"], 5), round(r["db"], 1)])
+            # Publish langsung saat data baru masuk, tidak menunggu putaran berkala. Inilah yang membuat
+            # lampu di HP bereaksi dalam kurang dari satu detik setelah suara berubah.
+            with publish_lock:
+                due = now - last_publish[0] >= MIN_PUBLISH_GAP_S
+                if due:
+                    last_publish[0] = now
+            if due:
+                publish_snapshot(now)
 
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect_async(config.BROKER_HOST, config.BROKER_PORT, keepalive=30)
     client.loop_start()   # thread terpisah yang mengurus jaringan dan menyambung ulang
 
-    last_save = time.time()
+    last_save = last_print = time.time()
     try:
         while True:
             time.sleep(PUBLISH_EVERY_S)
             now = time.time()
-            state, controls = hub.snapshot(now)
-            # retained: broker menyimpan pesan terakhir, jadi dashboard atau HP yang baru buka langsung dapat isinya
-            client.publish(topics.state(pid), json.dumps(state), qos=1, retain=True)
-            for device_id, ctl in controls.items():
-                client.publish(topics.edge_control(pid, device_id), json.dumps(ctl), qos=1, retain=True)
+            with publish_lock:
+                last_publish[0] = now
+            state = publish_snapshot(now)
+            if now - last_print < PRINT_EVERY_S:
+                continue
+            last_print = now
             if state["ranking"]:
                 top = state["ranking"][0]
                 print("%s | terbaik: %s (%.1f, %s) | online: %d | ditolak: %d" % (

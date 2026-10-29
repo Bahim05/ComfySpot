@@ -43,11 +43,20 @@ def noise_score(db):
 
 
 def comfort_score(lux, db, mode=DEFAULT_MODE):
-    """Skor kenyamanan 0..100 sebagai jumlah berbobot skor cahaya dan skor kebisingan."""
+    """Skor kenyamanan 0..100: rata-rata geometrik berbobot dari skor cahaya dan skor kebisingan.
+
+    skor = 100 * skor_cahaya^bobot_cahaya * skor_suara^bobot_suara
+
+    Kenapa bukan jumlah berbobot biasa: pada jumlah biasa, suara yang sangat tenang bisa menutupi
+    ruangan yang gelap gulita (lux 0 dan 34 dB tetap mendapat 70 di mode hening, yaitu kuning).
+    Pada rata-rata geometrik, kalau salah satu skor 0 maka hasilnya 0. Tempat yang tidak terlihat
+    atau terlalu bising memang tidak layak untuk belajar, seberapa bagus pun faktor yang lain.
+    Bobot tetap menentukan faktor mana yang lebih berpengaruh pada nilai di antaranya.
+    """
     if mode not in MODES:
         raise ValueError("mode tidak dikenal: %r" % (mode,))
     w = MODES[mode]
-    return 100.0 * (w["light"] * light_score(lux) + w["noise"] * noise_score(db))
+    return 100.0 * (light_score(lux) ** w["light"]) * (noise_score(db) ** w["noise"])
 
 
 def status_for(score):
