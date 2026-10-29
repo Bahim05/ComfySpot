@@ -1,7 +1,7 @@
 // Halaman sensor untuk HP lokasi (edge device).
 // Alur: baca mikrofon dan sensor cahaya -> tiap detik hitung RMS suara -> kirim ke broker lewat MQTT over WebSocket
-// -> terima perintah dari hub (skor, peringkat, warna lampu status) dan tampilkan.
-// Suara tidak pernah direkam atau dikirim. Yang keluar dari HP hanya dua angka: lux dan RMS.
+// -> (cahaya: dari sensor browser jika ada, atau dari skrip Termux lewat hub) -> terima perintah dari hub (skor, peringkat, warna lampu status) dan tampilkan.
+// Suara tidak pernah direkam atau dikirim. Yang keluar dari HP hanya angka: RMS suara dan lux.
 
 const $ = id => document.getElementById(id);
 
@@ -29,6 +29,7 @@ let sensorLux = null;    // pembacaan dari sensor cahaya HP
 let manualLux = null;    // isian manual, hanya dipakai kalau sensor tidak tersedia
 let seq = 0;
 let cfg = null;          // { pid, device, location }
+let hubLux = false;      // true jika angka cahaya yang tampil berasal dari hub (dikirim balik lewat control)
 
 // ---------- tampilan ----------
 
@@ -93,7 +94,7 @@ function startLight() {
   sensorLux = null;
   if (!('AmbientLightSensor' in window)) {
     $('manual-wrap').hidden = false;
-    $('light-note').textContent = 'Browser ini tidak punya akses sensor cahaya. Untuk Chrome Android, aktifkan chrome://flags/#enable-generic-sensor-extra-classes, atau isi lux manual di bawah (hanya untuk uji alur).';
+    $('light-note').textContent = 'Browser ini tidak membaca sensor cahaya. Cahaya diambil dari Termux di HP yang sama (python light_termux.py --device ' + ($('device').value.trim() || 'edge1') + '). Isian manual di bawah hanya untuk uji alur, kosongkan kalau memakai Termux.';
     return;
   }
   try {
@@ -105,7 +106,7 @@ function startLight() {
     });
     lightSensor.addEventListener('error', e => {
       $('manual-wrap').hidden = false;
-      $('light-note').textContent = 'Sensor cahaya gagal (' + (e.error && e.error.name || 'error') + '). Isi lux manual untuk uji alur.';
+      $('light-note').textContent = 'Sensor cahaya gagal (' + (e.error && e.error.name || 'error') + '). Pakai Termux untuk cahaya, atau isi lux manual hanya untuk uji alur.';
     });
     lightSensor.start();
     $('light-note').textContent = 'Menunggu pembacaan sensor cahaya...';
@@ -113,7 +114,7 @@ function startLight() {
     setTimeout(() => { if (sensorLux === null && client) $('manual-wrap').hidden = false; }, 3000);
   } catch (e) {
     $('manual-wrap').hidden = false;
-    $('light-note').textContent = 'Sensor cahaya ditolak (' + e.name + '). Isi lux manual untuk uji alur.';
+    $('light-note').textContent = 'Sensor cahaya ditolak (' + e.name + '). Pakai Termux untuk cahaya, atau isi lux manual hanya untuk uji alur.';
   }
 }
 
@@ -130,22 +131,28 @@ function sendTick() {
   sumSq = 0; nSamples = 0;
   $('v-rms').textContent = rms.toFixed(5);
 
+  // Cahaya dari halaman hanya dikirim jika ada. Kalau tidak ada, hub memakai lux dari skrip Termux
+  // di HP yang sama (topic light) dan menggabungkannya dengan RMS ini.
   const lux = currentLux();
-  if (!lux) {
+  if (lux) {
+    $('v-lux').textContent = lux.value.toFixed(1);
+    $('v-src').textContent = lux.source;
+  } else if (!hubLux) {
+    // belum ada angka dari hub; setelah hub menggabungkan lux Termux, angkanya tampil lewat handleControl
     $('v-lux').textContent = '-';
-    $('v-src').textContent = 'belum ada';
-    return;   // tanpa data cahaya, tidak ada yang dikirim
+    $('v-src').textContent = 'menunggu Termux';
   }
-  $('v-lux').textContent = lux.value.toFixed(1);
-  $('v-src').textContent = lux.source;
 
   if (!client || !client.connected) return;
   seq += 1;
   const payload = {
     device_id: cfg.device, location: cfg.location, sequence: seq,
-    lux: Math.round(lux.value * 10) / 10, mic_rms: Math.round(rms * 1e5) / 1e5,
-    lux_source: lux.source, sent_at_ms: Date.now()
+    mic_rms: Math.round(rms * 1e5) / 1e5, sent_at_ms: Date.now()
   };
+  if (lux) {
+    payload.lux = Math.round(lux.value * 10) / 10;
+    payload.lux_source = lux.source;
+  }
   client.publish(topicTelemetry(cfg.pid, cfg.device), JSON.stringify(payload), { qos: 0 });
   $('v-seq').textContent = String(seq);
 }
@@ -157,6 +164,13 @@ function handleControl(payload) {
   const labels = { hijau: 'Nyaman', kuning: 'Cukup', merah: 'Kurang nyaman' };
   const status = labels[ctl.status] ? ctl.status : null;
   if (!status) return;
+  // Hub mengirim balik angka yang dipakainya, jadi cahaya dari Termux dan dB ikut terlihat di halaman ini
+  if (typeof ctl.db === 'number') $('v-db').textContent = ctl.db.toFixed(1);
+  if (typeof ctl.lux === 'number' && currentLux() === null) {
+    hubLux = true;
+    $('v-lux').textContent = ctl.lux.toFixed(1);
+    $('v-src').textContent = ctl.lux_source === 'termux' ? 'Termux (lewat hub)' : String(ctl.lux_source);
+  }
   setStatus(status, labels[status],
     'Peringkat ' + ctl.rank + ' | skor ' + ctl.score + ' | mode ' + ctl.mode + (ctl.best ? ' | terbaik' : ''));
 }
@@ -232,6 +246,8 @@ function stop() {
   stopMic();
   stopLight();
   sumSq = 0; nSamples = 0;
+  hubLux = false;
+  $('v-db').textContent = '-';
   $('manual-wrap').hidden = true;
   $('connect-btn').textContent = 'Mulai';
   $('v-mqtt').textContent = 'Belum terhubung';

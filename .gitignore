@@ -14,3 +14,7 @@ data/*.tmp
 # editor
 .vscode/
 .idea/
+
+# berkas sampah dari Windows dan VS Code
+desktop.ini
+tempCodeRunnerFile.py

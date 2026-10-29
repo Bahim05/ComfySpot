@@ -13,7 +13,7 @@ HP lokasi B --+                                     +-- hub (laptop): olah data,
    telemetry mengalir ke atas, control mengalir ke bawah
 ```
 
-Ada dua HP atau lebih sebagai edge device, dan masing-masing memakai dua sensor: sensor cahaya (lux) dan mikrofon. Suara tidak direkam. Browser hanya menghitung RMS (seberapa keras bunyinya) tiap detik dan mengirim angkanya.
+Ada dua HP atau lebih sebagai edge device, dan masing-masing memakai dua sensor: sensor cahaya (lux) dan mikrofon. Di tiap HP, mikrofon dibaca oleh halaman web di Chrome dan sensor cahaya dibaca oleh skrip Python di Termux. Hub menggabungkan keduanya berdasarkan ID perangkat yang sama. Suara tidak direkam: browser hanya menghitung RMS (seberapa keras bunyinya) tiap detik dan mengirim angkanya.
 
 Protokolnya MQTT ke broker publik HiveMQ. HP dan dashboard memakai MQTT over WebSocket (port 8884), sedangkan hub memakai MQTT over TLS (port 8883).
 
@@ -42,8 +42,9 @@ Angka acuan 300 lux dan 55 dB berasal dari standar ruang baca (SNI 03-6197-2000 
 
 | Topic | Arah | Isi |
 |---|---|---|
-| `comfyspot/<PROJECT_ID>/edge/<device>/telemetry` | HP ke hub | `{"device_id","location","sequence","lux","mic_rms","lux_source","sent_at_ms"}` |
-| `comfyspot/<PROJECT_ID>/edge/<device>/control` | hub ke HP | `{"rank","score","status","mode","best","updated_ms"}` |
+| `comfyspot/<PROJECT_ID>/edge/<device>/telemetry` | HP ke hub | `{"device_id","location","sequence","mic_rms","sent_at_ms"}`, ditambah `lux` dan `lux_source` jika halaman punya data cahaya sendiri |
+| `comfyspot/<PROJECT_ID>/edge/<device>/light` | HP ke hub | `{"device_id","lux","lux_source","sent_at_ms"}` dari skrip Termux |
+| `comfyspot/<PROJECT_ID>/edge/<device>/control` | hub ke HP | `{"rank","score","status","mode","best","lux","lux_source","db","updated_ms"}` |
 | `comfyspot/<PROJECT_ID>/control/mode` | dashboard ke hub | teks `hening` atau `ramai` |
 | `comfyspot/<PROJECT_ID>/state` | hub ke dashboard | peringkat, offline, dB per jam, jam paling ramai |
 
@@ -64,9 +65,29 @@ python edge_sim.py --device edge1 --location Selasar --profile quiet
 python edge_sim.py --device edge2 --location Kantin --profile noisy
 ```
 
-Dengan HP asli, buka halaman `sensor/` di Chrome. Mikrofon di browser hanya boleh dipakai lewat HTTPS, jadi halaman itu sebaiknya dibuka dari GitHub Pages (Settings, Pages, pilih branch `main`). Isi PROJECT_ID yang sama, ID perangkat unik (`edge1`, `edge2`), dan nama lokasi, lalu tekan Mulai.
+Dengan HP asli, tiap HP menjalankan dua hal bersamaan, dengan ID perangkat yang sama (`edge1`, `edge2`, dan seterusnya):
 
-Sensor cahaya di Chrome Android perlu diaktifkan di `chrome://flags/#enable-generic-sensor-extra-classes`. Kalau tidak tersedia, halaman menyediakan isian lux manual hanya untuk menguji alur. Data manual ditandai `lux_source: manual` dan tidak boleh dipakai untuk pengujian akhir.
+1. Mikrofon: buka halaman `sensor/` di Chrome. Mikrofon di browser hanya boleh dipakai lewat HTTPS, jadi buka dari GitHub Pages (Settings, Pages, pilih branch `main`). Isi PROJECT_ID yang sama, ID perangkat, dan nama lokasi, lalu tekan Mulai. Biarkan Chrome di depan dengan layar menyala.
+2. Cahaya: di Termux jalankan `python light_termux.py --device edge1`. Skrip ini memanggil `termux-sensor` tiap detik dan mengirim lux ke topic `light`.
+
+Setup Termux (sekali saja per HP). Pasang F-Droid, lalu pasang Termux dan Termux:API dari F-Droid, dan buka Termux:
+
+```
+pkg update
+pkg install python git termux-api
+git clone https://github.com/Bahim05/ComfySpot
+cd ComfySpot
+pip install paho-mqtt python-dotenv
+cp .env.example .env
+nano .env                   # ganti PROJECT_ID, simpan dengan Ctrl+O lalu Enter, keluar dengan Ctrl+X
+termux-sensor -l            # opsional: lihat daftar sensor HP
+termux-wake-lock            # agar Termux tidak ditidurkan Android saat Chrome di depan
+python light_termux.py --device edge1
+```
+
+Skrip memilih sensor cahaya sekitar otomatis dari daftar `termux-sensor -l` (di Xiaomi misalnya "Ambient Light Sensor Non-wakeup", bukan "Optimization light fov Sensor"). Kalau pilihannya salah, tentukan sendiri dengan `--sensor "<nama sensor>"`. Hub hanya memakai lux Termux yang umurnya kurang dari 5 detik. Kalau skrip Termux berhenti, HP itu dilaporkan menunggu data cahaya dan keluar dari peringkat setelah 15 detik.
+
+Chrome Android versi baru tidak lagi menyediakan sensor cahaya, itu sebabnya cahaya dibaca lewat Termux. Kalau suatu browser mendukung `AmbientLightSensor`, halaman memakainya langsung. Isian lux manual di halaman hanya untuk menguji alur dan ditandai `lux_source: manual`, jadi tidak boleh dipakai untuk pengujian akhir.
 
 ## Kalibrasi
 
@@ -92,6 +113,7 @@ Hub mencatat setiap pembacaan ke `data/log.csv`, bahan grafik pengujian. Statist
 ```
 hub.py            hub di laptop
 edge_sim.py       simulator HP lokasi
+light_termux.py   pembaca sensor cahaya untuk HP lokasi (Termux)
 shared/           pengolahan data, algoritma, topic, konfigurasi
 sensor/           halaman sensor untuk HP (HTML, JS)
 dashboard/        dashboard web (menyusul)

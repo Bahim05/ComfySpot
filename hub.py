@@ -1,7 +1,8 @@
 """Hub ComfySpot (jalan di laptop).
 
 Tugasnya:
-  1. subscribe telemetry dari semua HP lokasi,
+  1. subscribe telemetry (RMS mikrofon dari halaman sensor) dan light (lux dari Termux) semua HP lokasi,
+     lalu menggabungkan keduanya per device_id,
   2. mengolah data (shared/processing.py) lalu memberi skor dan peringkat (shared/rules.py),
   3. publish state untuk dashboard dan perintah control untuk tiap HP (lampu status),
   4. menerima pilihan mode dari dashboard (topic control/mode).
@@ -20,6 +21,7 @@ from shared import config, rules, topics
 from shared.processing import SensorProcessor
 
 OFFLINE_AFTER_S = 15      # perangkat yang diam lebih lama dari ini dianggap offline
+LIGHT_MAX_AGE_S = 5       # lux dari Termux yang lebih tua dari ini dianggap basi dan tidak dipakai
 PUBLISH_EVERY_S = 2       # selang publish state dan control
 SAVE_EVERY_S = 30         # selang menyimpan statistik per jam ke file
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -41,22 +43,49 @@ class Hub:
         self.latest = {}                  # pembacaan terakhir per device_id
         self.hourly = rules.HourlyStats()
         self.invalid = 0                  # jumlah pesan yang ditolak
+        self.light = {}                   # lux terbaru dari skrip Termux: device_id -> (lux, waktu terima)
+        self.waiting = {}                 # device_id -> waktu terakhir telemetry datang tanpa data cahaya
         self.lock = threading.Lock()
 
     # ---------- masukan ----------
 
+    def handle_light(self, device_id, payload, now):
+        """Simpan lux dari skrip Termux. Dipakai nanti saat telemetry dari halaman sensor datang."""
+        lux = payload.get("lux") if isinstance(payload, dict) else None
+        if not device_id or not _number(lux) or lux < 0:
+            self.invalid += 1
+            return False
+        with self.lock:
+            self.light[device_id] = (float(lux), now)
+        return True
+
     def handle_telemetry(self, device_id, payload, now):
-        """Proses satu pesan telemetry. Kembalikan hasil olahan, atau None jika pesan tidak valid."""
+        """Proses satu pesan telemetry. Kembalikan hasil olahan, atau None jika pesan tidak dipakai."""
         if not device_id or not isinstance(payload, dict):
             self.invalid += 1
             return None
         lux, mic = payload.get("lux"), payload.get("mic_rms")
+        source = str(payload.get("lux_source", "sensor"))[:10]
         # Tolak pesan yang bentuknya salah: pesan dari broker publik bisa dikirim siapa saja.
-        if not (_number(lux) and _number(mic)) or lux < 0 or mic < 0:
+        if not _number(mic) or mic < 0:
+            self.invalid += 1
+            return None
+
+        if lux is None:
+            # Halaman sensor tidak membawa data cahaya (sensor cahaya dibaca Termux di HP yang sama).
+            # Pakai lux Termux terbaru, tetapi hanya jika masih segar; data basi lebih buruk daripada tidak ada.
+            with self.lock:
+                entry = self.light.get(device_id)
+                if entry is None or now - entry[1] > LIGHT_MAX_AGE_S:
+                    self.waiting[device_id] = now
+                    return None
+                lux, source = entry[0], "termux"
+        elif not _number(lux) or lux < 0:
             self.invalid += 1
             return None
 
         with self.lock:
+            self.waiting.pop(device_id, None)
             proc = self.processors.get(device_id)
             if proc is None:
                 proc = SensorProcessor(db_offset=self.offsets.get(device_id, 0.0))
@@ -69,7 +98,7 @@ class Hub:
                 device_id=device_id,
                 location=location,
                 lux_raw=float(lux),
-                lux_source=str(payload.get("lux_source", "sensor"))[:10],
+                lux_source=source,
                 last_seen=now,
             )
             hour = time.localtime(now).tm_hour
@@ -97,6 +126,10 @@ class Hub:
                       for loc in self.hourly.locations()}
             busiest = {loc: self.hourly.busiest_hours(loc) for loc in self.hourly.locations()}
             mode = self.mode
+            ranked_ids = {r["device_id"] for r in ranked}
+            # perangkat yang mikrofonnya sudah mengirim tetapi data cahayanya belum ada (skrip Termux belum jalan)
+            waiting = sorted(d for d, t in self.waiting.items()
+                             if now - t <= OFFLINE_AFTER_S and d not in ranked_ids)
 
         state = {
             "updated_ms": int(now * 1000),
@@ -112,6 +145,7 @@ class Hub:
                 for r in ranked
             ],
             "offline": offline,
+            "waiting_light": waiting,
             "hourly_db": hourly,
             "busiest_hours": busiest,
         }
@@ -119,6 +153,8 @@ class Hub:
             r["device_id"]: {
                 "rank": r["rank"], "score": r["score"], "status": r["status"],
                 "mode": mode, "best": r["rank"] == 1, "updated_ms": int(now * 1000),
+                # angka hasil olahan dikirim balik supaya HP bisa menampilkan cahaya dan dB yang dipakai hub
+                "lux": round(r["lux_avg"], 1), "lux_source": r["lux_source"], "db": round(r["db"], 1),
             }
             for r in ranked
         }
@@ -179,7 +215,7 @@ def main():
             return
         print("Tersambung ke %s:%s, PROJECT_ID=%s" % (config.BROKER_HOST, config.BROKER_PORT, pid))
         # subscribe dilakukan di sini supaya otomatis diulang setelah koneksi terputus
-        c.subscribe([(topics.telemetry_all(pid), 0), (topics.mode(pid), 1)])
+        c.subscribe([(topics.telemetry_all(pid), 0), (topics.light_all(pid), 0), (topics.mode(pid), 1)])
 
     def on_message(c, userdata, msg):
         now = time.time()
@@ -187,11 +223,15 @@ def main():
             if hub.set_mode(msg.payload.decode("utf-8", "ignore")):
                 print("Mode diubah menjadi", hub.mode)
             return
-        device_id = msg.topic.split("/")[-2]   # comfyspot/PID/edge/<device>/telemetry
+        parts = msg.topic.split("/")   # comfyspot/PID/edge/<device>/telemetry atau .../light
+        device_id, kind = parts[-2], parts[-1]
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             hub.invalid += 1
+            return
+        if kind == "light":
+            hub.handle_light(device_id, payload, now)
             return
         r = hub.handle_telemetry(device_id, payload, now)
         if r:
@@ -219,6 +259,9 @@ def main():
                 print("%s | terbaik: %s (%.1f, %s) | online: %d | ditolak: %d" % (
                     time.strftime("%H:%M:%S"), top["location"], top["score"], top["status"],
                     len(state["ranking"]), hub.invalid))
+            if state["waiting_light"]:
+                print("%s | menunggu data cahaya dari: %s (jalankan light_termux.py di HP itu)" % (
+                    time.strftime("%H:%M:%S"), ", ".join(state["waiting_light"])))
             if now - last_save >= SAVE_EVERY_S:
                 hub.save_hourly()
                 last_save = now
