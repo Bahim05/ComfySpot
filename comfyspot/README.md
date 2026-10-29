@@ -80,12 +80,12 @@ cd ComfySpot
 pip install paho-mqtt python-dotenv
 cp .env.example .env
 nano .env                   # ganti PROJECT_ID, simpan dengan Ctrl+O lalu Enter, keluar dengan Ctrl+X
-termux-sensor -l            # cari sensor yang namanya mengandung "light"
+termux-sensor -l            # opsional: lihat daftar sensor HP
 termux-wake-lock            # agar Termux tidak ditidurkan Android saat Chrome di depan
 python light_termux.py --device edge1
 ```
 
-Jika nama sensor cahaya HP tidak mengandung kata "light", tambahkan `--sensor <sebagian nama>`. Hub hanya memakai lux Termux yang umurnya kurang dari 5 detik. Kalau skrip Termux berhenti, HP itu dilaporkan menunggu data cahaya dan keluar dari peringkat setelah 15 detik.
+Skrip memilih sensor cahaya sekitar otomatis dari daftar `termux-sensor -l` (di Xiaomi misalnya "Ambient Light Sensor Non-wakeup", bukan "Optimization light fov Sensor"). Kalau pilihannya salah, tentukan sendiri dengan `--sensor "<nama sensor>"`. Hub hanya memakai lux Termux yang umurnya kurang dari 5 detik. Kalau skrip Termux berhenti, HP itu dilaporkan menunggu data cahaya dan keluar dari peringkat setelah 15 detik.
 
 Chrome Android versi baru tidak lagi menyediakan sensor cahaya, itu sebabnya cahaya dibaca lewat Termux. Kalau suatu browser mendukung `AmbientLightSensor`, halaman memakainya langsung. Isian lux manual di halaman hanya untuk menguji alur dan ditandai `lux_source: manual`, jadi tidak boleh dipakai untuk pengujian akhir.
 
